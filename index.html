@@ -1037,23 +1037,25 @@ textarea.form-input { resize: vertical; min-height: 100px; }
 
           <div class="tab-bar">
             <button class="tab-btn active" data-tab="stats-global">Global</button>
-            <button class="tab-btn" data-tab="stats-cats">Catégories</button>
-            <button class="tab-btn" data-tab="stats-habit">Par habitude</button>
+            <button class="tab-btn" data-tab="stats-mood">Humeur</button>
           </div>
 
           <div class="tab-content active" id="stats-global">
             <div class="chart-wrap"><canvas id="globalChart" class="chart-canvas" height="200"></canvas></div>
           </div>
-          <div class="tab-content" id="stats-cats">
-            <div class="category-filter-stats" id="categoryFilterStats"></div>
-            <div class="chart-wrap"><canvas id="categoryChart" class="chart-canvas" height="200"></canvas></div>
+          <div class="tab-content" id="stats-mood">
+            <div class="chart-wrap"><canvas id="statsMoodChart" class="chart-canvas" height="200"></canvas></div>
           </div>
-          <div class="tab-content" id="stats-habit">
-            <select id="habitSelect" class="form-input" style="margin-bottom:14px"></select>
-            <div class="habit-detail-stats" id="habitDetailStats"></div>
-            <div class="chart-wrap"><canvas id="habitChart" class="chart-canvas" height="200"></canvas></div>
-            <div class="cal-weekdays" id="calWeekdays"></div>
-            <div class="habit-calendar" id="habitCalendar"></div>
+
+          <!-- kept hidden for JS compatibility -->
+          <div style="display:none">
+            <select id="habitSelect"></select>
+            <div id="habitDetailStats"></div>
+            <canvas id="habitChart"></canvas>
+            <div id="calWeekdays"></div>
+            <div id="habitCalendar"></div>
+            <div id="categoryFilterStats"></div>
+            <canvas id="categoryChart"></canvas>
           </div>
         </div>
       </section>
@@ -1450,7 +1452,11 @@ const Utils = (() => {
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio||1;
     const rect = canvas.getBoundingClientRect();
-    if (!rect.width) return;
+    if (!rect.width) {
+      // Canvas not yet laid out — retry after next paint
+      requestAnimationFrame(()=>drawLineChart(canvas,labels,datasets,options));
+      return;
+    }
     canvas.width = rect.width*dpr; canvas.height = rect.height*dpr;
     ctx.scale(dpr,dpr);
     const W=rect.width, H=rect.height;
@@ -1491,26 +1497,65 @@ const Utils = (() => {
       const pts=ds.data.map((v,i)=>v!==null?{x:toX(i),y:toY(v)}:null);
       // Fill
       if(ds.fill){
-        ctx.beginPath(); let started=false;
-        pts.forEach(p=>{if(!p)return;if(!started){ctx.moveTo(p.x,p.y);started=true;}else ctx.lineTo(p.x,p.y);});
-        if(started){
-          ctx.lineTo(toX(pts.filter(Boolean).length?pts.map((p,i)=>p?i:-1).filter(i=>i>=0).pop():0),pad.top+cH);
-          ctx.lineTo(toX(pts.findIndex(p=>p)),pad.top+cH); ctx.closePath();
+        const tension=ds.tension||0;
+        const validPts=pts.filter(Boolean);
+        if(validPts.length){
+          ctx.beginPath();
+          ctx.moveTo(validPts[0].x,validPts[0].y);
+          if(tension>0&&validPts.length>1){
+            for(let i=0;i<validPts.length-1;i++){
+              const p0=validPts[Math.max(0,i-1)];
+              const p1=validPts[i];
+              const p2=validPts[i+1];
+              const p3=validPts[Math.min(validPts.length-1,i+2)];
+              const cp1x=p1.x+(p2.x-p0.x)*tension/3;
+              const cp1y=p1.y+(p2.y-p0.y)*tension/3;
+              const cp2x=p2.x-(p3.x-p1.x)*tension/3;
+              const cp2y=p2.y-(p3.y-p1.y)*tension/3;
+              ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+            }
+          } else {
+            for(let i=1;i<validPts.length;i++) ctx.lineTo(validPts[i].x,validPts[i].y);
+          }
+          ctx.lineTo(validPts[validPts.length-1].x,pad.top+cH);
+          ctx.lineTo(validPts[0].x,pad.top+cH);
+          ctx.closePath();
           ctx.fillStyle=ds.fillColor||'rgba(168,230,163,0.08)'; ctx.fill();
         }
       }
       // Line
       ctx.beginPath(); ctx.strokeStyle=ds.color||'#a8e6a3'; ctx.lineWidth=ds.lineWidth||2;
       ctx.lineJoin='round'; ctx.lineCap='round';
-      let started=false;
-      pts.forEach(p=>{if(!p){started=false;return;}if(!started){ctx.moveTo(p.x,p.y);started=true;}else ctx.lineTo(p.x,p.y);});
+      const tension=ds.tension||0;
+      const validPts=pts.filter(Boolean);
+      if(tension>0&&validPts.length>1){
+        // Smooth catmull-rom style bezier
+        ctx.moveTo(validPts[0].x,validPts[0].y);
+        for(let i=0;i<validPts.length-1;i++){
+          const p0=validPts[Math.max(0,i-1)];
+          const p1=validPts[i];
+          const p2=validPts[i+1];
+          const p3=validPts[Math.min(validPts.length-1,i+2)];
+          const cp1x=p1.x+(p2.x-p0.x)*tension/3;
+          const cp1y=p1.y+(p2.y-p0.y)*tension/3;
+          const cp2x=p2.x-(p3.x-p1.x)*tension/3;
+          const cp2y=p2.y-(p3.y-p1.y)*tension/3;
+          ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+        }
+      } else {
+        let started=false;
+        pts.forEach(p=>{if(!p){started=false;return;}if(!started){ctx.moveTo(p.x,p.y);started=true;}else ctx.lineTo(p.x,p.y);});
+      }
       ctx.stroke();
       // Dots
-      pts.forEach(p=>{
-        if(!p)return;
-        ctx.beginPath();ctx.arc(p.x,p.y,ds.dotRadius||2.5,0,Math.PI*2);
-        ctx.fillStyle=ds.color||'#a8e6a3';ctx.fill();
-      });
+      const dr = ds.dotRadius !== undefined ? ds.dotRadius : 2.5;
+      if(dr > 0){
+        pts.forEach(p=>{
+          if(!p)return;
+          ctx.beginPath();ctx.arc(p.x,p.y,dr,0,Math.PI*2);
+          ctx.fillStyle=ds.color||'#a8e6a3';ctx.fill();
+        });
+      }
     });
   }
 
@@ -2173,11 +2218,11 @@ const Stats = (() => {
         btn.classList.add('active');
         const tc=document.getElementById(btn.dataset.tab); if(tc)tc.classList.add('active');
         if(btn.dataset.tab==='stats-global')setTimeout(()=>renderGlobalChart(getPeriodDates()),50);
-        if(btn.dataset.tab==='stats-cats')setTimeout(()=>renderCategoryChart(getPeriodDates()),50);
-        if(btn.dataset.tab==='stats-habit')setTimeout(()=>renderHabitChart(),50);
+        if(btn.dataset.tab==='stats-mood')setTimeout(()=>renderStatsMoodChart(getPeriodDates()),50);
       });
     });
-    document.getElementById('habitSelect').addEventListener('change',renderHabitChart);
+    const hs=document.getElementById('habitSelect');
+    if(hs)hs.addEventListener('change',renderHabitChart);
     render();
   }
 
@@ -2189,7 +2234,12 @@ const Stats = (() => {
   function render() {
     const dates=getPeriodDates();
     renderSummaryCards(dates);
-    requestAnimationFrame(()=>{renderGlobalChart(dates);renderCategoryChart(dates);renderHabitChart();});
+    // Only render the active tab's chart to avoid layout issues
+    const activeMoodTab=document.querySelector('#page-stats .tab-btn[data-tab="stats-mood"].active');
+    requestAnimationFrame(()=>{
+      if(activeMoodTab){renderStatsMoodChart(dates);}
+      else{renderGlobalChart(dates);}
+    });
   }
 
   function renderSummaryCards(dates) {
@@ -2372,6 +2422,144 @@ const Stats = (() => {
         </div>
       </div>
     `;
+  }
+
+  function renderStatsMoodChart(dates) {
+    const canvas=document.getElementById('statsMoodChart'); if(!canvas)return;
+    const wrap=canvas.parentElement;
+    // Clear empty-state message
+    const prev=wrap&&wrap.querySelector('.mood-chart-empty');
+    if(prev)prev.remove();
+
+    // Build ordered list of {t, score} points — one per validated period entry
+    // t is a fractional day index: day index + fraction within the day based on period order
+    const periods=Store.get('settings.periods')||[];
+    const nPeriods=Math.max(periods.length,1);
+    const points=[]; // {t, score, label}
+
+    dates.forEach((d,di)=>{
+      const day=Store.getDay(d);
+      if(!day.mood)return;
+      periods.forEach((p,pi)=>{
+        const entry=day.mood[p.id];
+        if(!entry||entry.validated!==true)return;
+        // Spread periods evenly within the day: 0.15, 0.5, 0.85 for 3 periods
+        const frac=(pi+0.5)/nPeriods;
+        points.push({t:di+frac, score:entry.score, periodName:p.name, date:d});
+      });
+    });
+
+    // Empty state
+    if(!points.length){
+      if(wrap){const msg=document.createElement('p');msg.className='mood-chart-empty';msg.style.cssText='text-align:center;color:var(--text-3);padding:40px 0;font-size:.88rem';msg.textContent="Aucune note d'humeur validée sur cette période.";wrap.appendChild(msg);}
+      return;
+    }
+
+    canvas.style.display='block';
+    canvas.style.width='100%';
+    canvas.style.height='220px';
+
+    const doDraw=()=>{
+      const dpr=window.devicePixelRatio||1;
+      const rect=canvas.getBoundingClientRect();
+      if(!rect.width){requestAnimationFrame(doDraw);return;}
+      canvas.width=rect.width*dpr; canvas.height=rect.height*dpr;
+      const ctx=canvas.getContext('2d');
+      ctx.scale(dpr,dpr);
+      const W=rect.width, H=rect.height;
+      const pad={top:18,right:18,bottom:34,left:36};
+      const cW=W-pad.left-pad.right, cH=H-pad.top-pad.bottom;
+      const style=getComputedStyle(document.body);
+      const textColor=style.getPropertyValue('--text-3').trim()||'#888';
+      const borderColor=style.getPropertyValue('--border').trim()||'rgba(255,255,255,0.07)';
+      const accent=style.getPropertyValue('--accent').trim()||'#a8e6a3';
+      const fillColor=style.getPropertyValue('--accent-soft').trim()||'rgba(168,230,163,0.07)';
+      ctx.clearRect(0,0,W,H);
+
+      const tMin=0, tMax=dates.length-1+( (nPeriods-0.5)/nPeriods );
+      const tRange=Math.max(tMax-tMin,1);
+      const toX=t=>pad.left+((t-tMin)/tRange)*cW;
+      const toY=v=>pad.top+cH-((v/10))*cH;
+
+      // Grid lines Y (0,2,4,6,8,10)
+      ctx.strokeStyle=borderColor; ctx.lineWidth=0.5;
+      [0,2,4,6,8,10].forEach(v=>{
+        const y=toY(v);
+        ctx.beginPath();ctx.moveTo(pad.left,y);ctx.lineTo(pad.left+cW,y);ctx.stroke();
+        ctx.fillStyle=textColor;ctx.font='10px DM Sans,sans-serif';ctx.textAlign='right';
+        ctx.fillText(v,pad.left-4,y+3.5);
+      });
+
+      // X labels — one per day, positioned at the start of each day
+      ctx.fillStyle=textColor;ctx.font='10px DM Sans,sans-serif';ctx.textAlign='center';
+      const labelStep=Math.max(1,Math.floor(dates.length/7));
+      dates.forEach((d,di)=>{
+        if(di%labelStep===0||di===dates.length-1){
+          const x=toX(di);
+          ctx.fillText(Utils.formatDateShort(d),x,H-pad.bottom+14);
+          // Soft vertical day separator
+          ctx.strokeStyle=borderColor;ctx.lineWidth=0.5;
+          ctx.beginPath();ctx.moveTo(x,pad.top);ctx.lineTo(x,pad.top+cH);ctx.stroke();
+        }
+      });
+
+      // Build canvas coords for all points
+      const pts=points.map(p=>({x:toX(p.t),y:toY(p.score),score:p.score}));
+
+      // Fill under curve
+      if(pts.length>1){
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x,pts[0].y);
+        const k=0.4;
+        for(let i=0;i<pts.length-1;i++){
+          const p0=pts[Math.max(0,i-1)];
+          const p1=pts[i];
+          const p2=pts[i+1];
+          const p3=pts[Math.min(pts.length-1,i+2)];
+          const cp1x=p1.x+(p2.x-p0.x)*k/2;
+          const cp1y=p1.y+(p2.y-p0.y)*k/2;
+          const cp2x=p2.x-(p3.x-p1.x)*k/2;
+          const cp2y=p2.y-(p3.y-p1.y)*k/2;
+          ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+        }
+        ctx.lineTo(pts[pts.length-1].x,pad.top+cH);
+        ctx.lineTo(pts[0].x,pad.top+cH);
+        ctx.closePath();
+        ctx.fillStyle=fillColor;ctx.fill();
+      }
+
+      // Stroke curve
+      ctx.beginPath();ctx.strokeStyle=accent;ctx.lineWidth=2.5;ctx.lineJoin='round';ctx.lineCap='round';
+      if(pts.length===1){
+        // Single point: draw a small horizontal dash
+        ctx.moveTo(pts[0].x-12,pts[0].y);ctx.lineTo(pts[0].x+12,pts[0].y);
+      } else {
+        ctx.moveTo(pts[0].x,pts[0].y);
+        const k=0.4;
+        for(let i=0;i<pts.length-1;i++){
+          const p0=pts[Math.max(0,i-1)];
+          const p1=pts[i];
+          const p2=pts[i+1];
+          const p3=pts[Math.min(pts.length-1,i+2)];
+          const cp1x=p1.x+(p2.x-p0.x)*k/2;
+          const cp1y=p1.y+(p2.y-p0.y)*k/2;
+          const cp2x=p2.x-(p3.x-p1.x)*k/2;
+          const cp2y=p2.y-(p3.y-p1.y)*k/2;
+          ctx.bezierCurveTo(cp1x,cp1y,cp2x,cp2y,p2.x,p2.y);
+        }
+      }
+      ctx.stroke();
+
+      // Dots at each validated point
+      pts.forEach(p=>{
+        ctx.beginPath();ctx.arc(p.x,p.y,3.5,0,Math.PI*2);
+        ctx.fillStyle=accent;ctx.fill();
+        ctx.strokeStyle=style.getPropertyValue('--bg-2').trim()||'#171717';
+        ctx.lineWidth=1.5;ctx.stroke();
+      });
+    };
+
+    requestAnimationFrame(()=>requestAnimationFrame(doDraw));
   }
 
   return { init, render, buildHabitSelect };
